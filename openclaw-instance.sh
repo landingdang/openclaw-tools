@@ -525,6 +525,323 @@ health_wait() {
   fi
 }
 
+# ============================================================================
+# 宝塔面板自动化配置
+# ============================================================================
+setup_baota_site() {
+  local domain="$1"
+  local port="$2"
+  local instance_dir="$3"
+
+  echo
+  green "=========================================="
+  green "宝塔面板自动化配置"
+  green "=========================================="
+  info "域名: $domain"
+  info "端口: $port"
+  info "实例目录: $instance_dir"
+  echo
+
+  # 检查宝塔是否安装
+  if [[ ! -f /www/server/panel/BT-Panel ]]; then
+    error "未检测到宝塔面板，跳过自动配置"
+    return 1
+  fi
+
+  local BT_PANEL_PATH="/www/server/panel"
+  local BT_PYTHON="${BT_PANEL_PATH}/pyenv/bin/python"
+
+  # 调用宝塔 Python API
+  bt_api_call() {
+    local script="$1"
+    $BT_PYTHON -c "$script" 2>&1
+  }
+
+  # 步骤 1: 检查站点是否已存在
+  info "步骤 1: 检查站点是否已存在..."
+
+  local SITE_EXISTS=$(bt_api_call "
+import sys
+sys.path.insert(0, '/www/server/panel/class')
+import panelSite
+site = panelSite.panelSite()
+sites = site.GetSites(None)
+if sites and 'data' in sites:
+    for s in sites['data']:
+        if s.get('name') == '${domain}':
+            print('yes')
+            sys.exit(0)
+print('no')
+" || echo "no")
+
+  if [[ "$SITE_EXISTS" == "yes" ]]; then
+    if ask_yes_no "站点已存在，是否删除重建" "n"; then
+      warn "正在删除站点..."
+      bt_api_call "
+import sys
+sys.path.insert(0, '/www/server/panel/class')
+import panelSite
+site = panelSite.panelSite()
+class FakeRequest:
+    def __init__(self):
+        self.form = {'id': '', 'webname': '${domain}'}
+req = FakeRequest()
+sites = site.GetSites(None)
+site_id = None
+if sites and 'data' in sites:
+    for s in sites['data']:
+        if s.get('name') == '${domain}':
+            site_id = s.get('id')
+            break
+if site_id:
+    req.form['id'] = str(site_id)
+    result = site.DeleteSite(req)
+    print(result)
+"
+      info "站点已删除"
+    else
+      warn "跳过站点创建，将更新现有站点配置"
+      SITE_EXISTS="skip"
+    fi
+  fi
+
+  # 步骤 2: 创建站点
+  if [[ "$SITE_EXISTS" != "skip" ]]; then
+    info "步骤 2: 创建站点..."
+
+    local CREATE_RESULT=$(bt_api_call "
+import sys
+sys.path.insert(0, '/www/server/panel/class')
+import panelSite
+site = panelSite.panelSite()
+class FakeRequest:
+    def __init__(self):
+        self.form = {
+            'webname': '${domain}',
+            'path': '${instance_dir}/www',
+            'type_id': '0',
+            'type': 'PHP',
+            'version': '00',
+            'port': '80',
+            'ps': 'OpenClaw Instance - ${domain}',
+            'ftp': 'false',
+            'sql': 'false'
+        }
+req = FakeRequest()
+result = site.AddSite(req)
+print(result)
+")
+
+    if echo "$CREATE_RESULT" | grep -q "success\|成功"; then
+      info "站点创建成功"
+    else
+      error "站点创建失败: $CREATE_RESULT"
+      return 1
+    fi
+
+    # 创建 www 目录
+    mkdir -p "${instance_dir}/www"
+    echo "OpenClaw Instance" > "${instance_dir}/www/index.html"
+  fi
+
+  # 步骤 3: 配置反向代理
+  info "步骤 3: 配置反向代理..."
+
+  local NGINX_CONF="/www/server/panel/vhost/nginx/${domain}.conf"
+
+  if [[ ! -f "$NGINX_CONF" ]]; then
+    error "Nginx 配置文件不存在: $NGINX_CONF"
+    return 1
+  fi
+
+  # 备份原配置
+  cp "$NGINX_CONF" "${NGINX_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+
+  # 生成反向代理配置
+  cat > "$NGINX_CONF" << EOF
+server {
+    listen 80;
+    server_name ${domain};
+
+    # 访问日志
+    access_log /www/wwwlogs/${domain}.log;
+    error_log /www/wwwlogs/${domain}.error.log;
+
+    # 反向代理到 OpenClaw
+    location / {
+        proxy_pass http://127.0.0.1:${port};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # 超时设置
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+
+        # 缓冲设置
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    # 禁止访问隐藏文件
+    location ~ /\\. {
+        deny all;
+    }
+}
+EOF
+
+  info "反向代理配置已生成"
+
+  # 测试 Nginx 配置
+  if nginx -t 2>&1 | grep -q "successful"; then
+    info "Nginx 配置测试通过"
+    systemctl reload nginx
+    info "Nginx 已重载"
+  else
+    error "Nginx 配置测试失败"
+    mv "${NGINX_CONF}.bak."* "$NGINX_CONF" 2>/dev/null || true
+    error "已恢复原配置"
+    return 1
+  fi
+
+  # 步骤 4: 申请 SSL 证书
+  info "步骤 4: 申请 Let's Encrypt SSL 证书..."
+
+  if ! ask_yes_no "是否申请 SSL 证书（需要域名已解析到本机）" "y"; then
+    warn "跳过 SSL 证书申请"
+    green "宝塔站点配置完成（HTTP）"
+    info "访问地址: http://${domain}"
+    return 0
+  fi
+
+  # 检查域名解析
+  info "检查域名解析..."
+  local DOMAIN_IP=$(dig +short "$domain" @8.8.8.8 2>/dev/null | tail -1)
+  local LOCAL_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 icanhazip.com 2>/dev/null || echo "")
+
+  if [[ -z "$DOMAIN_IP" ]]; then
+    warn "无法解析域名: $domain"
+    warn "请确保域名已正确解析到本服务器"
+    warn "跳过 SSL 证书申请"
+    green "宝塔站点配置完成（HTTP）"
+    info "访问地址: http://${domain}"
+    return 0
+  fi
+
+  info "域名解析: $domain -> $DOMAIN_IP"
+  if [[ -n "$LOCAL_IP" && "$DOMAIN_IP" != "$LOCAL_IP" ]]; then
+    warn "域名未解析到本机 IP: $LOCAL_IP"
+    if ! ask_yes_no "继续申请 SSL 证书" "n"; then
+      warn "跳过 SSL 证书申请"
+      green "宝塔站点配置完成（HTTP）"
+      info "访问地址: http://${domain}"
+      return 0
+    fi
+  fi
+
+  info "开始申请 SSL 证书..."
+
+  local SSL_RESULT=$(bt_api_call "
+import sys
+sys.path.insert(0, '/www/server/panel/class')
+import panelSSL
+ssl = panelSSL.panelSSL()
+class FakeRequest:
+    def __init__(self):
+        self.form = {
+            'siteName': '${domain}',
+            'domains': '${domain}',
+            'email': 'admin@${domain}',
+            'auth_type': 'http'
+        }
+req = FakeRequest()
+result = ssl.ApplySSL(req)
+print(result)
+" || echo "failed")
+
+  if echo "$SSL_RESULT" | grep -q "success\|成功"; then
+    info "SSL 证书申请成功"
+
+    # 启用 HTTPS 强制跳转
+    info "启用 HTTPS 强制跳转..."
+
+    cat > "$NGINX_CONF" << EOF
+server {
+    listen 80;
+    server_name ${domain};
+
+    # 强制 HTTPS
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${domain};
+
+    # SSL 证书
+    ssl_certificate /www/server/panel/vhost/cert/${domain}/fullchain.pem;
+    ssl_certificate_key /www/server/panel/vhost/cert/${domain}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:HIGH:!aNULL:!MD5:!RC4:!DHE;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    # 访问日志
+    access_log /www/wwwlogs/${domain}.log;
+    error_log /www/wwwlogs/${domain}.error.log;
+
+    # 反向代理到 OpenClaw
+    location / {
+        proxy_pass http://127.0.0.1:${port};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # 超时设置
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+
+        # 缓冲设置
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    # 禁止访问隐藏文件
+    location ~ /\\. {
+        deny all;
+    }
+}
+EOF
+
+    if nginx -t 2>&1 | grep -q "successful"; then
+      systemctl reload nginx
+      info "HTTPS 配置已生效"
+      green "宝塔站点配置完成（HTTPS）"
+      info "访问地址: https://${domain}"
+    else
+      warn "HTTPS 配置失败，保持 HTTP 配置"
+      green "宝塔站点配置完成（HTTP）"
+      info "访问地址: http://${domain}"
+    fi
+  else
+    warn "SSL 证书申请失败: $SSL_RESULT"
+    warn "站点将以 HTTP 方式运行"
+    green "宝塔站点配置完成（HTTP）"
+    info "访问地址: http://${domain}"
+  fi
+
+  echo
+}
+
 main() {
   need_cmd docker
   need_cmd curl
@@ -551,6 +868,7 @@ main() {
   green " - 支持新建实例和更新配置"
   green " - 智能端口分配和冲突检测"
   green " - Git 源码管理（可选）"
+  green " - 宝塔面板自动化配置（可选）"
   green "================================================"
   echo
 
@@ -964,6 +1282,21 @@ main() {
     echo "docker compose run --rm openclaw-cli dashboard --no-open"
     echo "docker compose run --rm openclaw-cli devices list"
     echo "docker compose run --rm openclaw-cli devices approve <requestId>"
+    echo
+  fi
+
+  # 宝塔面板自动化配置
+  echo
+  if ask_yes_no "是否自动配置宝塔站点（创建站点、申请SSL、配置反向代理）" "y"; then
+    setup_baota_site "$domain" "$ui_port" "$target_dir"
+  else
+    yellow "跳过宝塔自动配置"
+    echo
+    yellow "手动配置步骤："
+    echo "1) DNS 添加 A 记录：${domain} -> 你的服务器 IP"
+    echo "2) 宝塔 -> 网站：创建站点 ${domain}"
+    echo "3) 给站点申请 SSL"
+    echo "4) 把 ${target_dir}/nginx-${domain}.conf 里的 location 配置粘到站点 Nginx 配置"
     echo
   fi
 
