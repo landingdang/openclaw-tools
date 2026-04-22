@@ -94,7 +94,7 @@ ask_yes_no() {
     case "${val,,}" in
       y|yes) return 0 ;;
       n|no)  return 1 ;;
-      *) yellow "请输入 y 或 n。" ;;
+      *) yellow "请输入 y/Y/yes 或 n/N/no" ;;
     esac
   done
 }
