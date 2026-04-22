@@ -9,11 +9,6 @@ REPO_URL_DEFAULT="https://github.com/openclaw/openclaw.git"
 REPO_BRANCH_DEFAULT="main"
 USE_GIT_SOURCE=0
 
-# openclaw-lark 插件配置
-LARK_PLUGIN_REPO="https://github.com/landingdang/openclaw-lark.git"
-LARK_PLUGIN_BRANCH="main"
-INSTALL_LARK_PLUGIN=0
-
 CREATED_DIR=0
 TARGET_DIR=""
 
@@ -185,117 +180,6 @@ build_image_from_source() {
     cd "$source_dir"
     docker build -t "$image_tag" .
   )
-}
-
-# ============================================================
-# openclaw-lark 插件相关函数
-# ============================================================
-
-ensure_lark_plugin() {
-  local plugin_dir="$1"
-  local repo_url="$2"
-  local branch="$3"
-
-  if [[ -d "$plugin_dir/.git" ]]; then
-    green "更新 openclaw-lark 插件源码"
-    (
-      cd "$plugin_dir"
-      if ! git fetch origin 2>/dev/null; then
-        yellow "网络连接失败，跳过更新，使用现有源码"
-        return 0
-      fi
-      git checkout "$branch"
-      git pull origin "$branch" || {
-        yellow "更新失败，使用现有源码"
-        return 0
-      }
-    )
-  elif [[ -d "$plugin_dir" && -f "$plugin_dir/package.json" ]]; then
-    green "检测到已存在的插件源码目录（非 Git 仓库）"
-    yellow "跳过克隆，使用现有源码：$plugin_dir"
-  else
-    green "克隆 openclaw-lark 插件源码"
-    mkdir -p "$(dirname "$plugin_dir")"
-    if ! git clone --branch "$branch" --single-branch "$repo_url" "$plugin_dir" 2>/dev/null; then
-      red "克隆插件源码失败"
-      yellow "可能的原因："
-      echo "  1. 网络连接问题"
-      echo "  2. GitHub 访问受限"
-      echo
-      yellow "解决方案："
-      echo "  1. 检查网络连接后重试"
-      echo "  2. 手动下载插件源码到：$plugin_dir"
-      echo "  3. 跳过插件安装，后续手动安装"
-      return 1
-    fi
-  fi
-}
-
-build_lark_plugin() {
-  local plugin_dir="$1"
-  local output_dir="$2"
-
-  green "构建 openclaw-lark 插件"
-
-  # 检查 pnpm 是否安装
-  if ! command -v pnpm &>/dev/null; then
-    yellow "pnpm 未安装，正在安装..."
-    # 使用 npm 官方源安装 pnpm，避免镜像源问题
-    npm install -g pnpm --registry=https://registry.npmjs.org/
-  fi
-
-  (
-    cd "$plugin_dir"
-
-    # 安装依赖
-    green "安装插件依赖"
-    pnpm install
-
-    # 构建
-    green "构建插件"
-    pnpm run build
-
-    # 打包
-    green "打包插件"
-    pnpm pack
-
-    # 移动到输出目录（处理 scope 包名）
-    mkdir -p "$output_dir"
-    # pnpm pack 生成的文件名格式：larksuite-openclaw-lark-2026.4.1.tgz
-    mv larksuite-openclaw-lark-*.tgz "$output_dir/openclaw-lark.tgz" 2>/dev/null || \
-      mv openclaw-lark-*.tgz "$output_dir/openclaw-lark.tgz"
-
-    green "插件包已生成: $output_dir/openclaw-lark.tgz"
-  )
-}
-
-install_lark_plugin_to_instance() {
-  local instance_dir="$1"
-  local plugin_package="$2"
-
-  green "安装 openclaw-lark 插件到实例"
-
-  # 创建 extensions 目录（不要重复 .openclaw）
-  mkdir -p "$instance_dir/config/extensions"
-
-  # 将插件包复制到 extensions 目录
-  cp "$plugin_package" "$instance_dir/config/extensions/"
-
-  # 在容器中安装插件
-  (
-    cd "$instance_dir"
-    docker compose run --rm openclaw-cli \
-      plugins install /home/node/.openclaw/extensions/openclaw-lark.tgz
-  )
-
-  # 启用插件
-  (
-    cd "$instance_dir"
-    docker compose run --rm openclaw-cli \
-      plugins enable openclaw-lark
-  )
-
-  green "插件安装并启用完成"
 }
 
 collect_reserved_ports() {
@@ -883,22 +767,6 @@ main() {
     break
   done
 
-  # openclaw-lark 插件安装选项
-  local install_lark=0
-  if [[ $is_update -eq 0 ]]; then
-    echo
-    green "openclaw-lark 插件选项："
-    echo "  openclaw-lark 是飞书集成插件，提供飞书机器人功能"
-    echo "  仓库: $LARK_PLUGIN_REPO"
-    echo
-    if ask_yes_no "是否安装 openclaw-lark 插件" "n"; then
-      install_lark=1
-      green "将在部署完成后安装 openclaw-lark 插件"
-    else
-      green "跳过插件安装"
-    fi
-  fi
-
   echo
   if [[ $is_update -eq 1 ]]; then
     green "请确认本次更新配置："
@@ -1040,34 +908,6 @@ main() {
       docker compose up -d openclaw-gateway
     fi
   )
-
-  # 安装 openclaw-lark 插件（必须在容器启动后）
-  if [[ $install_lark -eq 1 ]]; then
-    green "[8.5/10] 安装 openclaw-lark 插件"
-    local lark_source="${base_dir}/openclaw-lark-source"
-    local plugin_output="${target_dir}/temp-plugin-build"
-
-    if ! ensure_lark_plugin "$lark_source" "$LARK_PLUGIN_REPO" "$LARK_PLUGIN_BRANCH"; then
-      yellow "插件源码准备失败，跳过插件安装"
-      yellow "你可以稍后手动安装插件"
-    else
-      if ! build_lark_plugin "$lark_source" "$plugin_output"; then
-        yellow "插件构建失败，跳过插件安装"
-        yellow "你可以稍后手动安装插件"
-      else
-        # 安装插件到实例
-        if ! install_lark_plugin_to_instance "$target_dir" "${plugin_output}/openclaw-lark.tgz"; then
-          yellow "插件安装失败"
-          yellow "你可以稍后手动安装插件"
-        else
-          green "openclaw-lark 插件已安装"
-        fi
-      fi
-
-      # 清理临时构建目录
-      rm -rf "$plugin_output"
-    fi
-  fi
 
   green "[9/10] 生成辅助文件"
   write_nginx_snippet "$target_dir" "$domain" "$ui_port"
