@@ -4,7 +4,7 @@ set -Eeuo pipefail
 IMAGE_DEFAULT="docker.cnb.cool/btpanel/openclaw:latest"
 BASE_DIR_DEFAULT="/data/openclaw"
 TZ_DEFAULT="Asia/Shanghai"
-ROOT_DOMAIN_DEFAULT="mixiaoxiao.com"
+ROOT_DOMAIN_DEFAULT="huxs.cn"
 REPO_URL_DEFAULT="https://github.com/openclaw/openclaw.git"
 REPO_BRANCH_DEFAULT="main"
 USE_GIT_SOURCE=0
