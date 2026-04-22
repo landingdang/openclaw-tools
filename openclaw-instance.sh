@@ -923,18 +923,29 @@ main() {
     build_image_from_source "$shared_source" "$image"
   else
     green "[1/10] 跳过 Git 源码同步（使用镜像内置源码）"
-    green "[2/10] 检查并拉取镜像"
+    green "[2/10] 检查镜像"
     if ! docker image inspect "${image}" >/dev/null 2>&1; then
-      yellow "本地镜像不存在，尝试从远程拉取..."
-      if ! docker pull "${image}"; then
-        red "镜像拉取失败：${image}"
-        red "请检查："
-        red "  1. 镜像名称是否正确"
-        red "  2. 网络连接是否正常"
-        red "  3. 是否有权限访问该镜像"
+      yellow "本地未找到镜像：${image}"
+      echo
+      yellow "本地已有的 openclaw 相关镜像："
+      docker images | grep -E "openclaw|btpanel" || echo "  未找到相关镜像"
+      echo
+      yellow "可能的原因："
+      echo "  1. 镜像名称或标签不匹配"
+      echo "  2. 宝塔面板下载的镜像名称不同"
+      echo
+      if ask_yes_no "是否尝试从远程拉取镜像" "y"; then
+        if ! docker pull "${image}"; then
+          red "镜像拉取失败"
+          yellow "请手动检查并修正镜像名称，或使用以下命令标记现有镜像："
+          echo "  docker tag <现有镜像名> ${image}"
+          exit 1
+        fi
+        green "镜像拉取成功"
+      else
+        red "已取消部署"
         exit 1
       fi
-      green "镜像拉取成功"
     else
       green "本地镜像已存在"
     fi
