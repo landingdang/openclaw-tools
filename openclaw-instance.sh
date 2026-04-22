@@ -220,7 +220,8 @@ build_lark_plugin() {
   # 检查 pnpm 是否安装
   if ! command -v pnpm &>/dev/null; then
     yellow "pnpm 未安装，正在安装..."
-    npm install -g pnpm
+    # 使用 npm 官方源安装 pnpm，避免镜像源问题
+    npm install -g pnpm --registry=https://registry.npmjs.org/
   fi
 
   (
