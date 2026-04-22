@@ -200,14 +200,34 @@ ensure_lark_plugin() {
     green "更新 openclaw-lark 插件源码"
     (
       cd "$plugin_dir"
-      git fetch origin
+      if ! git fetch origin 2>/dev/null; then
+        yellow "网络连接失败，跳过更新，使用现有源码"
+        return 0
+      fi
       git checkout "$branch"
-      git pull origin "$branch"
+      git pull origin "$branch" || {
+        yellow "更新失败，使用现有源码"
+        return 0
+      }
     )
+  elif [[ -d "$plugin_dir" && -f "$plugin_dir/package.json" ]]; then
+    green "检测到已存在的插件源码目录（非 Git 仓库）"
+    yellow "跳过克隆，使用现有源码：$plugin_dir"
   else
     green "克隆 openclaw-lark 插件源码"
     mkdir -p "$(dirname "$plugin_dir")"
-    git clone --branch "$branch" --single-branch "$repo_url" "$plugin_dir"
+    if ! git clone --branch "$branch" --single-branch "$repo_url" "$plugin_dir" 2>/dev/null; then
+      red "克隆插件源码失败"
+      yellow "可能的原因："
+      echo "  1. 网络连接问题"
+      echo "  2. GitHub 访问受限"
+      echo
+      yellow "解决方案："
+      echo "  1. 检查网络连接后重试"
+      echo "  2. 手动下载插件源码到：$plugin_dir"
+      echo "  3. 跳过插件安装，后续手动安装"
+      return 1
+    fi
   fi
 }
 
@@ -1027,16 +1047,26 @@ main() {
     local lark_source="${base_dir}/openclaw-lark-source"
     local plugin_output="${target_dir}/temp-plugin-build"
 
-    ensure_lark_plugin "$lark_source" "$LARK_PLUGIN_REPO" "$LARK_PLUGIN_BRANCH"
-    build_lark_plugin "$lark_source" "$plugin_output"
+    if ! ensure_lark_plugin "$lark_source" "$LARK_PLUGIN_REPO" "$LARK_PLUGIN_BRANCH"; then
+      yellow "插件源码准备失败，跳过插件安装"
+      yellow "你可以稍后手动安装插件"
+    else
+      if ! build_lark_plugin "$lark_source" "$plugin_output"; then
+        yellow "插件构建失败，跳过插件安装"
+        yellow "你可以稍后手动安装插件"
+      else
+        # 安装插件到实例
+        if ! install_lark_plugin_to_instance "$target_dir" "${plugin_output}/openclaw-lark.tgz"; then
+          yellow "插件安装失败"
+          yellow "你可以稍后手动安装插件"
+        else
+          green "openclaw-lark 插件已安装"
+        fi
+      fi
 
-    # 安装插件到实例
-    install_lark_plugin_to_instance "$target_dir" "${plugin_output}/openclaw-lark.tgz"
-
-    # 清理临时构建目录
-    rm -rf "$plugin_output"
-
-    green "openclaw-lark 插件已安装"
+      # 清理临时构建目录
+      rm -rf "$plugin_output"
+    fi
   fi
 
   green "[9/10] 生成辅助文件"
