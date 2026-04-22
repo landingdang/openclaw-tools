@@ -15,6 +15,9 @@ TARGET_DIR=""
 green()  { echo -e "\033[1;32m$*\033[0m"; }
 yellow() { echo -e "\033[1;33m$*\033[0m"; }
 red()    { echo -e "\033[1;31m$*\033[0m" >&2; }
+info()   { echo -e "\033[1;36m$*\033[0m"; }
+warn()   { yellow "$@"; }
+error()  { red "$@"; }
 
 on_error() {
   local exit_code=$?
@@ -359,7 +362,13 @@ domain_exists() {
 
 port_listening() {
   local port="$1"
-  ss -lnt 2>/dev/null | awk '{print $4}' | grep -E "(^|:)$port$" >/dev/null 2>&1
+  if command -v ss &>/dev/null; then
+    ss -lnt 2>/dev/null | awk '{print $4}' | grep -E "(^|:)$port$" >/dev/null 2>&1
+  elif command -v netstat &>/dev/null; then
+    netstat -tuln 2>/dev/null | grep -E ":$port " >/dev/null 2>&1
+  else
+    return 1
+  fi
 }
 
 port_declared_file() {
@@ -510,18 +519,24 @@ EOF
 health_wait() {
   local port="$1"
   local ok=0
-  for _ in $(seq 1 30); do
+  for i in $(seq 1 20); do
     if curl -fsS "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
       ok=1
       break
     fi
-    sleep 2
+    sleep 3
   done
 
   if [[ "$ok" -eq 1 ]]; then
     green "健康检查通过：http://127.0.0.1:${port}/healthz"
   else
-    yellow "健康检查暂未通过，建议执行日志检查。"
+    yellow "健康检查暂未通过（已等待 60 秒）"
+    yellow "建议执行日志检查：docker compose logs -f openclaw-gateway"
+    echo
+    if ! ask_yes_no "容器可能未正常启动，是否继续" "y"; then
+      red "部署中止，请检查日志排查问题"
+      exit 1
+    fi
   fi
 }
 
@@ -551,28 +566,42 @@ setup_baota_site() {
   local BT_PANEL_PATH="/www/server/panel"
   local BT_PYTHON="${BT_PANEL_PATH}/pyenv/bin/python"
 
-  # 调用宝塔 Python API
+  # 调用宝塔 Python API（安全版本，防止注入）
   bt_api_call() {
     local script="$1"
-    $BT_PYTHON -c "$script" 2>&1
+    shift
+    local args=("$@")
+
+    if [[ ! -x "$BT_PYTHON" ]]; then
+      error "宝塔 Python 解释器不存在或不可执行: $BT_PYTHON"
+      return 1
+    fi
+
+    local result exit_code
+    result=$($BT_PYTHON -c "$script" "${args[@]}" 2>&1)
+    exit_code=$?
+    echo "$result"
+    return $exit_code
   }
 
   # 步骤 1: 检查站点是否已存在
   info "步骤 1: 检查站点是否已存在..."
 
-  local SITE_EXISTS=$(bt_api_call "
+  local SITE_EXISTS
+  SITE_EXISTS=$(bt_api_call "
 import sys
 sys.path.insert(0, '/www/server/panel/class')
 import panelSite
 site = panelSite.panelSite()
 sites = site.GetSites(None)
+domain = sys.argv[1] if len(sys.argv) > 1 else ''
 if sites and 'data' in sites:
     for s in sites['data']:
-        if s.get('name') == '${domain}':
+        if s.get('name') == domain:
             print('yes')
             sys.exit(0)
 print('no')
-" || echo "no")
+" "$domain" || echo "no")
 
   if [[ "$SITE_EXISTS" == "yes" ]]; then
     if ask_yes_no "站点已存在，是否删除重建" "n"; then
@@ -583,21 +612,22 @@ sys.path.insert(0, '/www/server/panel/class')
 import panelSite
 site = panelSite.panelSite()
 class FakeRequest:
-    def __init__(self):
-        self.form = {'id': '', 'webname': '${domain}'}
-req = FakeRequest()
+    def __init__(self, domain):
+        self.form = {'id': '', 'webname': domain}
+domain = sys.argv[1] if len(sys.argv) > 1 else ''
+req = FakeRequest(domain)
 sites = site.GetSites(None)
 site_id = None
 if sites and 'data' in sites:
     for s in sites['data']:
-        if s.get('name') == '${domain}':
+        if s.get('name') == domain:
             site_id = s.get('id')
             break
 if site_id:
     req.form['id'] = str(site_id)
     result = site.DeleteSite(req)
     print(result)
-"
+" "$domain"
       info "站点已删除"
     else
       warn "跳过站点创建，将更新现有站点配置"
@@ -609,28 +639,31 @@ if site_id:
   if [[ "$SITE_EXISTS" != "skip" ]]; then
     info "步骤 2: 创建站点..."
 
-    local CREATE_RESULT=$(bt_api_call "
+    local CREATE_RESULT
+    CREATE_RESULT=$(bt_api_call "
 import sys
 sys.path.insert(0, '/www/server/panel/class')
 import panelSite
 site = panelSite.panelSite()
 class FakeRequest:
-    def __init__(self):
+    def __init__(self, domain, path):
         self.form = {
-            'webname': '${domain}',
-            'path': '${instance_dir}/www',
+            'webname': domain,
+            'path': path,
             'type_id': '0',
             'type': 'PHP',
             'version': '00',
             'port': '80',
-            'ps': 'OpenClaw Instance - ${domain}',
+            'ps': 'OpenClaw Instance - ' + domain,
             'ftp': 'false',
             'sql': 'false'
         }
-req = FakeRequest()
+domain = sys.argv[1] if len(sys.argv) > 1 else ''
+path = sys.argv[2] if len(sys.argv) > 2 else ''
+req = FakeRequest(domain, path)
 result = site.AddSite(req)
 print(result)
-")
+" "$domain" "${instance_dir}/www")
 
     if echo "$CREATE_RESULT" | grep -q "success\|成功"; then
       info "站点创建成功"
@@ -654,8 +687,12 @@ print(result)
     return 1
   fi
 
-  # 备份原配置
-  cp "$NGINX_CONF" "${NGINX_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+  # 备份原配置（保留最近 5 个备份）
+  if [[ -f "$NGINX_CONF" ]]; then
+    cp "$NGINX_CONF" "${NGINX_CONF}.bak.$(date +%Y%m%d_%H%M%S)"
+    # 清理旧备份，只保留最近 5 个
+    ls -t "${NGINX_CONF}.bak."* 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+  fi
 
   # 生成反向代理配置
   cat > "$NGINX_CONF" << EOF
@@ -720,48 +757,58 @@ EOF
 
   # 检查域名解析
   info "检查域名解析..."
-  local DOMAIN_IP=$(dig +short "$domain" @8.8.8.8 2>/dev/null | tail -1)
-  local LOCAL_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 icanhazip.com 2>/dev/null || echo "")
 
-  if [[ -z "$DOMAIN_IP" ]]; then
-    warn "无法解析域名: $domain"
-    warn "请确保域名已正确解析到本服务器"
-    warn "跳过 SSL 证书申请"
-    green "宝塔站点配置完成（HTTP）"
-    info "访问地址: http://${domain}"
-    return 0
-  fi
+  if ! command -v dig &>/dev/null; then
+    warn "dig 命令不存在，跳过域名解析检查"
+  else
+    local DOMAIN_IP LOCAL_IP
+    DOMAIN_IP=$(dig +short "$domain" @8.8.8.8 2>/dev/null | tail -1)
+    LOCAL_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 icanhazip.com 2>/dev/null || echo "")
 
-  info "域名解析: $domain -> $DOMAIN_IP"
-  if [[ -n "$LOCAL_IP" && "$DOMAIN_IP" != "$LOCAL_IP" ]]; then
-    warn "域名未解析到本机 IP: $LOCAL_IP"
-    if ! ask_yes_no "继续申请 SSL 证书" "n"; then
-      warn "跳过 SSL 证书申请"
-      green "宝塔站点配置完成（HTTP）"
-      info "访问地址: http://${domain}"
-      return 0
+    if [[ -z "$DOMAIN_IP" ]]; then
+      warn "无法解析域名: $domain"
+      warn "请确保域名已正确解析到本服务器"
+      if ! ask_yes_no "继续申请 SSL 证书" "n"; then
+        warn "跳过 SSL 证书申请"
+        green "宝塔站点配置完成（HTTP）"
+        info "访问地址: http://${domain}"
+        return 0
+      fi
+    else
+      info "域名解析: $domain -> $DOMAIN_IP"
+      if [[ -n "$LOCAL_IP" && "$DOMAIN_IP" != "$LOCAL_IP" ]]; then
+        warn "域名未解析到本机 IP: $LOCAL_IP"
+        if ! ask_yes_no "继续申请 SSL 证书" "n"; then
+          warn "跳过 SSL 证书申请"
+          green "宝塔站点配置完成（HTTP）"
+          info "访问地址: http://${domain}"
+          return 0
+        fi
+      fi
     fi
   fi
 
   info "开始申请 SSL 证书..."
 
-  local SSL_RESULT=$(bt_api_call "
+  local SSL_RESULT
+  SSL_RESULT=$(bt_api_call "
 import sys
 sys.path.insert(0, '/www/server/panel/class')
 import panelSSL
 ssl = panelSSL.panelSSL()
 class FakeRequest:
-    def __init__(self):
+    def __init__(self, domain):
         self.form = {
-            'siteName': '${domain}',
-            'domains': '${domain}',
-            'email': 'admin@${domain}',
+            'siteName': domain,
+            'domains': domain,
+            'email': 'admin@' + domain,
             'auth_type': 'http'
         }
-req = FakeRequest()
+domain = sys.argv[1] if len(sys.argv) > 1 else ''
+req = FakeRequest(domain)
 result = ssl.ApplySSL(req)
 print(result)
-" || echo "failed")
+" "$domain" || echo "failed")
 
   if echo "$SSL_RESULT" | grep -q "success\|成功"; then
     info "SSL 证书申请成功"
@@ -1181,8 +1228,16 @@ main() {
     green "[6/10] 执行 onboard"
     (
       cd "$target_dir"
-      docker compose run --rm --no-deps --entrypoint node openclaw-gateway \
-        dist/index.js onboard --mode local --no-install-daemon
+      if ! docker compose run --rm --entrypoint node openclaw-gateway \
+        dist/index.js onboard --mode local --no-install-daemon; then
+        red "onboard 执行失败"
+        yellow "尝试查看日志："
+        docker compose logs openclaw-gateway | tail -20
+        if ! ask_yes_no "是否继续部署（可能导致配置不完整）" "n"; then
+          red "部署中止"
+          exit 1
+        fi
+      fi
     )
   else
     green "[6/10] 跳过 onboard（更新模式）"
@@ -1210,8 +1265,16 @@ main() {
   green "[7/10] 写入 gateway 配置"
   (
     cd "$target_dir"
-    docker compose run --rm --no-deps --entrypoint node openclaw-gateway \
-      dist/index.js config set --batch-json "$batch_json"
+    if ! docker compose run --rm --entrypoint node openclaw-gateway \
+      dist/index.js config set --batch-json "$batch_json"; then
+      red "配置写入失败"
+      yellow "尝试查看日志："
+      docker compose logs openclaw-gateway | tail -20
+      if ! ask_yes_no "是否继续部署（可能导致配置不完整）" "n"; then
+        red "部署中止"
+        exit 1
+      fi
+    fi
   )
 
   green "[8/10] 启动 openclaw-gateway"
