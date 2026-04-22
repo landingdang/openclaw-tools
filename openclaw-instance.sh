@@ -284,14 +284,14 @@ install_lark_plugin_to_instance() {
   # 在容器中安装插件
   (
     cd "$instance_dir"
-    docker compose run --rm --no-deps openclaw-gateway \
+    docker compose run --rm openclaw-cli \
       plugins install /home/node/.openclaw/extensions/openclaw-lark.tgz
   )
 
   # 启用插件
   (
     cd "$instance_dir"
-    docker compose run --rm --no-deps openclaw-gateway \
+    docker compose run --rm openclaw-cli \
       plugins enable openclaw-lark
   )
 
