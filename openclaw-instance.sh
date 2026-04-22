@@ -923,10 +923,20 @@ main() {
     build_image_from_source "$shared_source" "$image"
   else
     green "[1/10] 跳过 Git 源码同步（使用镜像内置源码）"
-    green "[2/10] 检查本地镜像"
+    green "[2/10] 检查并拉取镜像"
     if ! docker image inspect "${image}" >/dev/null 2>&1; then
-      red "本地镜像不存在：${image}"
-      exit 1
+      yellow "本地镜像不存在，尝试从远程拉取..."
+      if ! docker pull "${image}"; then
+        red "镜像拉取失败：${image}"
+        red "请检查："
+        red "  1. 镜像名称是否正确"
+        red "  2. 网络连接是否正常"
+        red "  3. 是否有权限访问该镜像"
+        exit 1
+      fi
+      green "镜像拉取成功"
+    else
+      green "本地镜像已存在"
     fi
   fi
 
