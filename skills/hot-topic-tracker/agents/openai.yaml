@@ -1,0 +1,4 @@
+interface:
+  display_name: "热点追踪专家"
+  short_description: "追踪最新热点、爆点话题与权威信源，生成核查长文稿件"
+  default_prompt: "Use $hot-topic-tracker to track a topic, surface hot subtopics from the last 5 days, and write a fact-checked long-form article."

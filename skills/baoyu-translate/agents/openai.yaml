@@ -1,0 +1,7 @@
+interface:
+  display_name: "Baoyu 文档翻译"
+  short_description: "面向文章与文档的翻译工具，支持快翻、精修和术语一致性控制"
+  default_prompt: "Use $baoyu-translate to translate this content with the right mode, glossary handling, and output structure."
+
+policy:
+  allow_implicit_invocation: true

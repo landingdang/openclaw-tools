@@ -1,0 +1,7 @@
+interface:
+  display_name: "Baoyu 封面图生成"
+  short_description: "为文章、专题页和内容卡片生成统一风格且可直接使用的封面图"
+  default_prompt: "Use $baoyu-cover-image to create a strong cover image with the right type, palette, rendering, and aspect ratio."
+
+policy:
+  allow_implicit_invocation: true

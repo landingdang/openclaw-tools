@@ -1,0 +1,4 @@
+interface:
+  display_name: "B2B商机挖掘引擎"
+  short_description: "挖掘中国大陆B2B商机、评分线索并生成微信触达文案"
+  default_prompt: "Use $b2b-opportunity-engine to find Mainland China prospects, map competitors, score opportunities, and generate WeChat/WeCom first-touch scripts."

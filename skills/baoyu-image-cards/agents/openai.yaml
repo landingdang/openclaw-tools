@@ -1,0 +1,7 @@
+interface:
+  display_name: "Baoyu 图片卡片组"
+  short_description: "生成适合社媒传播的多张图片卡片、知识图卡和连续内容图组"
+  default_prompt: "Use $baoyu-image-cards to turn this content into a coherent image card series with prompts and outputs."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Baoyu AI 出图"
+  short_description: "多模型 AI 出图工具，支持参考图、批量生成、模型切换和输出控制"
+  default_prompt: "Use $baoyu-imagine to generate one or more images with the right provider, model, and output path."
+
+policy:
+  allow_implicit_invocation: true

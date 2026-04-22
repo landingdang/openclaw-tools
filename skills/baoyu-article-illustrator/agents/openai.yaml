@@ -1,0 +1,7 @@
+interface:
+  display_name: "Baoyu 文章配图"
+  short_description: "分析文章结构、规划插图位置并批量生成适合插入正文的插图"
+  default_prompt: "Use $baoyu-article-illustrator to analyze this article, plan illustration positions, and generate the needed images."
+
+policy:
+  allow_implicit_invocation: true

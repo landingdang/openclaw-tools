@@ -1,0 +1,7 @@
+interface:
+  display_name: "Prompt 优化器"
+  short_description: "优化原始提示词并输出更清晰可执行的 prompt"
+  default_prompt: "Use $prompt-optimizer to refine this rough prompt for the target AI platform."
+
+policy:
+  allow_implicit_invocation: true

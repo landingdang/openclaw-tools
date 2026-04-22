@@ -1,0 +1,7 @@
+interface:
+  display_name: "Baoyu 网页转 Markdown"
+  short_description: "抓取网页正文并保存为 Markdown，支持媒体下载"
+  default_prompt: "Use $baoyu-url-to-markdown to fetch this URL, save clean markdown, and handle media or interaction when needed."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Baoyu 信息图生成"
+  short_description: "把复杂内容整理成结构化信息图，并输出适合发布和复用的成图结果"
+  default_prompt: "Use $baoyu-infographic to convert this content into a structured infographic with a suitable layout and style."
+
+policy:
+  allow_implicit_invocation: true
